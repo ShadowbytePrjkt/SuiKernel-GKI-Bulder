@@ -115,8 +115,8 @@ fi
 if ksu_manual_hook; then
   # Apply manual hook patch based on KSU variant
   if [[ $KSU == "Suki" ]]; then
-    log "Applying manual hook patch for SukiSU (syscall_hooks.patch)"
-    patch -p1 < $workdir/kernel-patches/syscall_hooks.patch
+    log "Applying manual hook patch for SukiSU (scope_min_manual_hooks_v1.5.patch)"
+    patch -p1 < $workdir/kernel-patches/scope_min_manual_hooks_v1.5.patch
   else
     log "Applying manual hook patch for KernelSU (manual-hook.patch)"
     patch -p1 < $workdir/kernel-patches/manual-hook.patch
