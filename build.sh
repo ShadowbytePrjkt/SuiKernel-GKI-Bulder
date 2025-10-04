@@ -94,11 +94,7 @@ if ksu_included; then
   "Suki") install_ksu SukiSU-Ultra/SukiSU-Ultra $(if susfs_included; then echo "susfs-main"; elif ksu_manual_hook; then echo "nongki"; else echo "main"; fi) ;;
   esac
   config --enable CONFIG_KSU
-
-  # Only disable CONFIG_KSU_MANUAL_SU for SukiSU builds
-  if [[ $KSU == "Suki" ]]; then
-    config --disable CONFIG_KSU_MANUAL_SU
-  fi
+  config --disable CONFIG_KSU_MANUAL_SU
 fi
 
 # SUSFS
@@ -142,8 +138,17 @@ fi
 # ---
 log "🧹 Finalizing build configuration with branding..."
 
-INTERNAL_BRAND="${KERNEL_NAME}-${VARIANT}"
-export KERNEL_RELEASE_NAME="${KERNEL_NAME}-${LINUX_VERSION}-${VARIANT}"
+# Get the GitHub Release Tag, using HSKY4 as a fallback for local builds
+RELEASE_TAG="${GITHUB_REF_NAME:-HSKY4}"
+
+# This sets the string that is appended to the base kernel version for `uname -r`
+# It will result in an output like: 5.10.243-SuiKernel-HSKY4-KSUN+SuSFS
+INTERNAL_BRAND="-${KERNEL_NAME}-${RELEASE_TAG}-${VARIANT}"
+
+# This defines the user-facing name for the zip file and installer string
+# It will result in a string like: SuiKernel-HSKY4-5.10.243-KSUN+SuSFS
+export KERNEL_RELEASE_NAME="${KERNEL_NAME}-${RELEASE_TAG}-${LINUX_VERSION}-${VARIANT}"
+
 
 # Apply branding-specific modifications from your snippet
 if [ -f "./common/build.config.gki" ]; then
@@ -249,12 +254,12 @@ if [[ $STATUS == "BETA" ]]; then
   BUILD_DATE=$(date -d "$KBUILD_BUILD_TIMESTAMP" +"%Y%m%d-%H%M")
   ZIP_NAME=${ZIP_NAME//BUILD_DATE/$BUILD_DATE}
   sed -i \
-    "s/kernel.string=.*/kernel.string=SuiKernel ${LINUX_VERSION} ${KERNEL_NAME} (${BUILD_DATE}) ${VARIANT}/g" \
+    "s/kernel.string=.*/kernel.string=${KERNEL_RELEASE_NAME} (${BUILD_DATE})/g" \
     $workdir/anykernel/anykernel.sh
 else
   ZIP_NAME=${ZIP_NAME//-BUILD_DATE/}
   sed -i \
-    "s/kernel.string=.*/kernel.string=SuiKernel ${LINUX_VERSION} ${KERNEL_NAME} ${VARIANT}/g" \
+    "s/kernel.string=.*/kernel.string=${KERNEL_RELEASE_NAME}/g" \
     $workdir/anykernel/anykernel.sh
 fi
 
