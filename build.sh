@@ -83,7 +83,7 @@ for KSU_PATH in drivers/staging/kernelsu drivers/kernelsu KernelSU; do
 done
 
 # Install kernelsu (Next)
-install_ksu pershoot/KernelSU-Next "stable"
+install_ksu KernelSU-Next/KernelSU-Next "dev"
 config --enable CONFIG_KSU
 config --disable CONFIG_KSU_MANUAL_SU
 config --disable CONFIG_KSU_SUSFS
