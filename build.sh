@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+
 workdir=$(pwd)
 
 # Handle error
@@ -84,12 +85,54 @@ done
 install_ksu pershoot/KernelSU-Next "dev"
 config --enable CONFIG_KSU
 config --disable CONFIG_KSU_MANUAL_SU
-config --disable CONFIG_KSU_SUSFS
+
+# ────────────────────────────────────────────────
+#   ADD SUSFS (root hiding patches) - AFTER KernelSU
+# ────────────────────────────────────────────────
+log "Adding SuSFS patches for advanced root hiding..."
+
+SUSFS_REPO="https://gitlab.com/simonpunk/susfs4ksu.git"
+SUSFS_BRANCH="gki-android12-5.10-dev" 
+
+git clone --depth=1 -b "$SUSFS_BRANCH" "$SUSFS_REPO" ../susfs_temp || {
+  log "Failed to clone susfs4ksu repository!"
+  exit 1
+}
+
+# Copy added files from kernel_patches subfolders
+cp -rf ../susfs_temp/kernel_patches/fs/* fs/ 2>/dev/null || true
+cp -rf ../susfs_temp/kernel_patches/include/linux/* include/linux/ 2>/dev/null || true
+
+# Apply the main integration patch
+MAIN_PATCH="../susfs_temp/kernel_patches/50_addsusfs_in_gki-android12-5.10.patch"
+if [[ -f "$MAIN_PATCH" ]]; then
+  log "Applying main SuSFS patch: $(basename "$MAIN_PATCH")"
+  patch -p1 --no-backup-if-mismatch < "$MAIN_PATCH" || {
+    log "Main SuSFS patch failed! Check conflicts or branch compatibility."
+    exit 1
+  }
+else
+  log "Warning: Main patch 50_addsusfs_in_gki-android12-5.10.patch not found"
+fi
+
+# Apply any other .patch files
+for patch in ../susfs_temp/kernel_patches/*.patch; do
+  if [[ -f "$patch" && "$patch" != "$MAIN_PATCH" ]]; then
+    log "Applying extra SuSFS patch: $(basename "$patch")"
+    patch -p1 --no-backup-if-mismatch < "$patch" || log "Extra patch $(basename "$patch") failed (may be optional)"
+  fi
+done
+
+# Clean up
+rm -rf ../susfs_temp
+
+cd $workdir
 
 # ---
 # ✅ NEW BRANDING SECTION
 # ---
 log "🧹 Finalizing build configuration with branding..."
+
 RELEASE_TAG="${GITHUB_REF_NAME:-HSKY4}"
 INTERNAL_BRAND="-${KERNEL_NAME}-${RELEASE_TAG}-${VARIANT}"
 export KERNEL_RELEASE_NAME="${KERNEL_NAME}-${RELEASE_TAG}-${LINUX_VERSION}-${VARIANT}"
@@ -101,6 +144,11 @@ fi
 
 config --set-str CONFIG_LOCALVERSION "$INTERNAL_BRAND"
 config --disable CONFIG_LOCALVERSION_AUTO
+
+# Enable SuSFS config options (added by the patches)
+config --enable CONFIG_KSU_SUSFS
+config --enable CONFIG_KSU_SUSFS_AUTO_ADD  # optional auto-mount/hiding
+
 log "✅ Internal kernel version set to: ${LINUX_VERSION}${INTERNAL_BRAND}"
 log "✅ User-facing release name set to: $KERNEL_RELEASE_NAME"
 
@@ -110,7 +158,7 @@ export KBUILD_BUILD_HOST="$HOST"
 export KBUILD_BUILD_TIMESTAMP=$(date)
 
 # ────────────────────────────────────────────────
-#   CONTROL PARALLELISM & DISABLE LTO FOR GITHUB
+# CONTROL PARALLELISM & DISABLE LTO FOR GITHUB
 # ────────────────────────────────────────────────
 if [[ -n "$GITHUB_ACTIONS" ]]; then
     JOBS=4
@@ -141,8 +189,8 @@ echo "MESSAGE_ID=$MESSAGE_ID" >> $GITHUB_ENV
 # === KEEP-ALIVE WITH BETTER MEMORY MONITORING ===
 (
     while true; do
-        echo "[KEEP-ALIVE $(date '+%H:%M:%S')] Avail RAM: $(free -h | awk '/Mem:/ {print $7}')   Swap: $(free -h | awk '/Swap:/ {print $3 "/" $2}')"
-        echo "  Load avg: $(uptime | awk -F'load average: ' '{print $2}')"
+        echo "[KEEP-ALIVE $(date '+%H:%M:%S')] Avail RAM: $(free -h | awk '/Mem:/ {print $7}') Swap: $(free -h | awk '/Swap:/ {print $3 "/" $2}')"
+        echo " Load avg: $(uptime | awk -F'load average: ' '{print $2}')"
         sleep 120
     done
 ) &
@@ -157,9 +205,9 @@ make $BUILD_FLAGS $KERNEL_DEFCONFIG
 log "Disabling LTO/ThinLTO to prevent OOM kill..."
 sed -i '/CONFIG_LTO/d' out/.config || true
 sed -i '/CONFIG_THINLTO/d' out/.config || true
-echo "CONFIG_LTO_NONE=y"          >> out/.config
-echo "CONFIG_LTO_CLANG=n"         >> out/.config
-echo "CONFIG_THINLTO=n"           >> out/.config
+echo "CONFIG_LTO_NONE=y" >> out/.config
+echo "CONFIG_LTO_CLANG=n" >> out/.config
+echo "CONFIG_THINLTO=n" >> out/.config
 make $BUILD_FLAGS olddefconfig
 
 # Upload defconfig if requested
@@ -173,9 +221,6 @@ fi
 # Build the actual kernel
 log "Building kernel..."
 make $BUILD_FLAGS Image modules
-#           ^^^^^^^^
-#     If still dies → try changing to: make $BUILD_FLAGS Image
-#     (skip modules for testing)
 
 # Check KMI symbols
 $KMI_CHECK "$KSRC/android/abi_gki_aarch64.xml" "$MODULE_SYMVERS"
