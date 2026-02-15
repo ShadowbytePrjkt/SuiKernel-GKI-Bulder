@@ -101,29 +101,40 @@ make ARCH=arm64 mrproper
 
 cd $workdir
 
-# Configure GKI
-log "Configuring GKI kernel with BUILD_CONFIG=common/build.config.gki and O=out..."
+# ────────────────────────────────────────────────
+# Two-step config to avoid dirty tree
+# ────────────────────────────────────────────────
+log "Configuring GKI kernel (two-step to avoid dirty tree issues)..."
 
 cd $KSRC
 mkdir -p out
 
-BUILD_CONFIG=common/build.config.gki O=out make gki_defconfig || {
-  log "gki_defconfig failed! Fallback..."
-  make defconfig || exit 1
-}
+# Step 1: config in root (creates root files)
+BUILD_CONFIG=common/build.config.gki make gki_defconfig || make defconfig || exit 1
 
-# Branding & config
+# Clean root files immediately
+make ARCH=arm64 mrproper
+
+# Step 2: config in out/
+BUILD_CONFIG=common/build.config.gki O=out make gki_defconfig || exit 1
+
+cd $workdir
+
+# ────────────────────────────────────────────────
+# BRANDING & CONFIG (direct in out/)
+# ────────────────────────────────────────────────
 log "🧹 Finalizing build configuration with branding..."
 
 RELEASE_TAG="${GITHUB_REF_NAME:-HSKY4}"
 INTERNAL_BRAND="-${KERNEL_NAME}-${RELEASE_TAG}-${VARIANT}"
 export KERNEL_RELEASE_NAME="${KERNEL_NAME}-${RELEASE_TAG}-${LINUX_VERSION}-${VARIANT}"
 
-if [ -f "common/build.config.gki" ]; then
-    sed -i 's/check_defconfig//' common/build.config.gki
+if [ -f "$KSRC/common/build.config.gki" ]; then
+    log "Patching build.config.gki..."
+    sed -i 's/check_defconfig//' "$KSRC/common/build.config.gki"
 fi
 
-cd out
+cd "$KSRC/out"
 
 log "Applying config changes..."
 
@@ -163,7 +174,7 @@ fi
 
 BUILD_FLAGS="-j$JOBS ARCH=arm64 LLVM=1 LLVM_IAS=1 O=out CROSS_COMPILE=$CROSS_COMPILE_PREFIX"
 
-# Final clean before build (clears root-generated files from config)
+# Final clean before build
 cd $KSRC
 log "Final clean before compilation (mrproper again)..."
 make ARCH=arm64 mrproper
