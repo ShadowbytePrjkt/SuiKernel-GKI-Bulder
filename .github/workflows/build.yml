@@ -89,6 +89,15 @@ jobs:
           sudo aptitude install -y libssl-dev
           pip install lxml
 
+      - name: Add swap space (helps survive linking phase)
+        run: |
+          sudo fallocate -l 12G /swapfile || sudo fallocate -l 8G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
+          swapon --show    
+
       - name: Run Build Script
         env:
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
