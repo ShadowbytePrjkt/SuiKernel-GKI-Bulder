@@ -92,7 +92,7 @@ config --disable CONFIG_KSU_MANUAL_SU
 log "Adding SuSFS patches for advanced root hiding..."
 
 SUSFS_REPO="https://gitlab.com/simonpunk/susfs4ksu.git"
-SUSFS_BRANCH="gki-android12-5.10-dev" 
+SUSFS_BRANCH="gki-android12-5.10-dev"  # confirmed for your kernel
 
 git clone --depth=1 -b "$SUSFS_BRANCH" "$SUSFS_REPO" ../susfs_temp || {
   log "Failed to clone susfs4ksu repository!"
@@ -103,25 +103,30 @@ git clone --depth=1 -b "$SUSFS_BRANCH" "$SUSFS_REPO" ../susfs_temp || {
 cp -rf ../susfs_temp/kernel_patches/fs/* fs/ 2>/dev/null || true
 cp -rf ../susfs_temp/kernel_patches/include/linux/* include/linux/ 2>/dev/null || true
 
-# Apply the main integration patch
-MAIN_PATCH="../susfs_temp/kernel_patches/50_addsusfs_in_gki-android12-5.10.patch"
+# Apply the main integration patch (correct name with underscore)
+MAIN_PATCH="../susfs_temp/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch"
 if [[ -f "$MAIN_PATCH" ]]; then
   log "Applying main SuSFS patch: $(basename "$MAIN_PATCH")"
   patch -p1 --no-backup-if-mismatch < "$MAIN_PATCH" || {
-    log "Main SuSFS patch failed! Check conflicts or branch compatibility."
+    log "Main SuSFS patch failed! Check conflicts or kernel compatibility."
     exit 1
   }
 else
-  log "Warning: Main patch 50_addsusfs_in_gki-android12-5.10.patch not found"
+  log "Warning: Main patch 50_add_susfs_in_gki-android12-5.10.patch not found - check branch!"
 fi
 
-# Apply any other .patch files
+# Apply any other .patch files (fixes, etc.)
 for patch in ../susfs_temp/kernel_patches/*.patch; do
   if [[ -f "$patch" && "$patch" != "$MAIN_PATCH" ]]; then
     log "Applying extra SuSFS patch: $(basename "$patch")"
     patch -p1 --no-backup-if-mismatch < "$patch" || log "Extra patch $(basename "$patch") failed (may be optional)"
   fi
 done
+
+# Clean up
+rm -rf ../susfs_temp
+
+cd $workdir
 
 # Clean up
 rm -rf ../susfs_temp
