@@ -26,41 +26,16 @@ cd $KSRC
 LINUX_VERSION=$(make kernelversion)
 
 # ────────────────────────────────────────────────
-# AUTO-DETECT DEFCONFIG (force prefer gki_defconfig if exists)
+# Use standard Android GKI config generation
 # ────────────────────────────────────────────────
-log "Detecting defconfig file..."
+log "Configuring GKI kernel using standard 'make gki_defconfig'..."
 
-DEFCONFIG_CANDIDATES=(
-  "gki_defconfig"               # your preferred one
-  "gki.aarch64_defconfig"
-  "android_gki_defconfig"
-  "vendor_gki_defconfig"
-  "defconfig"
-)
+# Force use the GKI target (merges fragments automatically)
+KERNEL_DEFCONFIG="gki_defconfig"  # symbolic name for make
 
-DEFCONFIG_FILE=""
-KERNEL_DEFCONFIG=""
-
-for cand in "${DEFCONFIG_CANDIDATES[@]}"; do
-  if [[ -f "arch/arm64/configs/$cand" ]]; then
-    DEFCONFIG_FILE="arch/arm64/configs/$cand"
-    KERNEL_DEFCONFIG="$cand"
-    log "Found preferred defconfig: $KERNEL_DEFCONFIG"
-    break
-  fi
-done
-
-if [[ -z "$DEFCONFIG_FILE" ]]; then
-  log "Preferred gki_defconfig not found. Trying any *defconfig..."
-  DEFCONFIG_FILE=$(find arch/arm64/configs -name "*defconfig" -print -quit 2>/dev/null)
-  if [[ -n "$DEFCONFIG_FILE" ]]; then
-    KERNEL_DEFCONFIG=$(basename "$DEFCONFIG_FILE")
-    log "Auto-detected fallback defconfig: $KERNEL_DEFCONFIG"
-  else
-    log "ERROR: No defconfig file found in arch/arm64/configs/!"
-    exit 1
-  fi
-fi
+# Optional: log available fragments for debug
+log "Available GKI fragments:"
+ls -l arch/arm64/configs/*gki*.fragment 2>/dev/null || log "(no fragments listed)"
 
 cd $workdir
 
@@ -135,31 +110,27 @@ git clone --depth=1 -b "$SUSFS_BRANCH" "$SUSFS_REPO" ../susfs_temp || {
   exit 1
 }
 
-# Copy added files from kernel_patches subfolders
 cp -rf ../susfs_temp/kernel_patches/fs/* fs/ 2>/dev/null || true
 cp -rf ../susfs_temp/kernel_patches/include/linux/* include/linux/ 2>/dev/null || true
 
-# Apply the main integration patch
 MAIN_PATCH="../susfs_temp/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch"
 if [[ -f "$MAIN_PATCH" ]]; then
   log "Applying main SuSFS patch: $(basename "$MAIN_PATCH")"
   patch -p1 --no-backup-if-mismatch < "$MAIN_PATCH" || {
-    log "Main SuSFS patch failed! Check conflicts or kernel compatibility."
+    log "Main SuSFS patch failed! Check conflicts."
     exit 1
   }
 else
-  log "Warning: Main patch 50_add_susfs_in_gki-android12-5.10.patch not found - check branch!"
+  log "Warning: Main patch not found - check branch!"
 fi
 
-# Apply any other .patch files
 for patch in ../susfs_temp/kernel_patches/*.patch; do
   if [[ -f "$patch" && "$patch" != "$MAIN_PATCH" ]]; then
     log "Applying extra SuSFS patch: $(basename "$patch")"
-    patch -p1 --no-backup-if-mismatch < "$patch" || log "Extra patch $(basename "$patch") failed (may be optional)"
+    patch -p1 --no-backup-if-mismatch < "$patch" || log "Extra patch failed (optional)"
   fi
 done
 
-# Clean up
 rm -rf ../susfs_temp
 
 cd $workdir
@@ -175,24 +146,20 @@ if [ -f "./common/build.config.gki" ]; then
     log "Patching build.config.gki for branding..."
     sed -i 's/check_defconfig//' ./common/build.config.gki
 fi
+
 config --set-str CONFIG_LOCALVERSION "$INTERNAL_BRAND"
 config --disable CONFIG_LOCALVERSION_AUTO
 
-# Enable SuSFS config options (added by the patches)
 config --enable CONFIG_KSU_SUSFS
-config --enable CONFIG_KSU_SUSFS_AUTO_ADD  # optional auto-mount/hiding
+config --enable CONFIG_KSU_SUSFS_AUTO_ADD
 
 log "✅ Internal kernel version set to: ${LINUX_VERSION}${INTERNAL_BRAND}"
 log "✅ User-facing release name set to: $KERNEL_RELEASE_NAME"
 
-# Declare needed variables
 export KBUILD_BUILD_USER="$USER"
 export KBUILD_BUILD_HOST="$HOST"
 export KBUILD_BUILD_TIMESTAMP=$(date)
 
-# ────────────────────────────────────────────────
-# CONTROL PARALLELISM & DISABLE LTO FOR GITHUB
-# ────────────────────────────────────────────────
 if [[ -n "$GITHUB_ACTIONS" ]]; then
     JOBS=4
     log "GitHub Actions detected → using low parallelism (-j$JOBS) to avoid OOM"
@@ -219,7 +186,7 @@ EOF
 MESSAGE_ID=$(send_msg "$text" 2>&1 | jq -r .result.message_id)
 echo "MESSAGE_ID=$MESSAGE_ID" >> $GITHUB_ENV
 
-# === KEEP-ALIVE WITH BETTER MEMORY MONITORING ===
+# === KEEP-ALIVE ===
 (
     while true; do
         echo "[KEEP-ALIVE $(date '+%H:%M:%S')] Avail RAM: $(free -h | awk '/Mem:/ {print $7}') Swap: $(free -h | awk '/Swap:/ {print $3 "/" $2}')"
@@ -232,9 +199,8 @@ disown $HEARTBEAT_PID
 
 ## Build GKI
 log "Generating config..."
-make $BUILD_FLAGS $KERNEL_DEFCONFIG
+make $BUILD_FLAGS gki_defconfig
 
-# Force disable LTO / ThinLTO (biggest RAM & time saver on weak runners)
 log "Disabling LTO/ThinLTO to prevent OOM kill..."
 sed -i '/CONFIG_LTO/d' out/.config || true
 sed -i '/CONFIG_THINLTO/d' out/.config || true
@@ -243,7 +209,6 @@ echo "CONFIG_LTO_CLANG=n" >> out/.config
 echo "CONFIG_THINLTO=n" >> out/.config
 make $BUILD_FLAGS olddefconfig
 
-# Upload defconfig if requested
 if [[ $TODO == "defconfig" ]]; then
   log "Uploading defconfig..."
   upload_file $KSRC/out/.config
@@ -251,21 +216,17 @@ if [[ $TODO == "defconfig" ]]; then
   exit 0
 fi
 
-# Build the actual kernel
 log "Building kernel..."
 make $BUILD_FLAGS Image modules
 
-# Check KMI symbols
 $KMI_CHECK "$KSRC/android/abi_gki_aarch64.xml" "$MODULE_SYMVERS"
 
 ## Post-compiling stuff
 cd $workdir
 
-# Clone AnyKernel
 log "Cloning anykernel from $(simplify_gh_url "$ANYKERNEL_REPO")"
 git clone -q --depth=1 $ANYKERNEL_REPO -b $ANYKERNEL_BRANCH anykernel
 
-# Set kernel string in anykernel
 if [[ $STATUS == "BETA" ]]; then
   BUILD_DATE=$(date -d "$KBUILD_BUILD_TIMESTAMP" +"%Y%m%d-%H%M")
   ZIP_NAME=${ZIP_NAME//BUILD_DATE/$BUILD_DATE}
@@ -275,7 +236,6 @@ else
   sed -i "s/kernel.string=.*/kernel.string=${KERNEL_RELEASE_NAME}/g" $workdir/anykernel/anykernel.sh
 fi
 
-# Zip
 cd anykernel
 log "Zipping anykernel..."
 cp $KERNEL_IMAGE .
@@ -304,6 +264,5 @@ else
   log "✅ Build Succeeded. Artifact link will be sent by GitHub Action."
 fi
 
-# Cleanup heartbeat
 kill $HEARTBEAT_PID 2>/dev/null || true
 exit 0
