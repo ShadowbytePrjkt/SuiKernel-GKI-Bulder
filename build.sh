@@ -120,7 +120,7 @@ log "✅ User-facing release name set to: $KERNEL_RELEASE_NAME"
 export KBUILD_BUILD_USER="$USER"
 export KBUILD_BUILD_HOST="$HOST"
 export KBUILD_BUILD_TIMESTAMP=$(date)
-BUILD_FLAGS="-j12 ARCH=arm64 LLVM=1 LLVM_IAS=1 O=out CROSS_COMPILE=$CROSS_COMPILE_PREFIX"
+BUILD_FLAGS="-j8 ARCH=arm64 LLVM=1 LLVM_IAS=1 O=out CROSS_COMPILE=$CROSS_COMPILE_PREFIX"
 KERNEL_IMAGE="$KSRC/out/arch/arm64/boot/Image"
 KMI_CHECK="$workdir/scripts/KMI_function_symbols_test.py"
 MODULE_SYMVERS="$KSRC/out/Module.symvers"
