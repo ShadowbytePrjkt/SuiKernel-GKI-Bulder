@@ -127,7 +127,7 @@ MODULE_SYMVERS="$KSRC/out/Module.symvers"
 
 text=$(
   cat << EOF
-*==== SuiKernel Builder ====*
+*==== GrayRavens GKI Builder ====*
 🐧 *Linux Version*: $LINUX_VERSION
 📅 *Build Date*: $KBUILD_BUILD_TIMESTAMP
 📛 *KernelSU*: ${KSU} | $KSU_VERSION
