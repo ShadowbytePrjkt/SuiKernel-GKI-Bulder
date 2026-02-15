@@ -13,17 +13,19 @@ source $workdir/functions.sh
 # Set timezone
 export TZ="$TIMEZONE"
 
+# Allow larger stack size (helps some clang crashes)
+ulimit -s unlimited
+
 # Clone kernel source
 KSRC="$workdir/ksrc"
 log "Cloning kernel source from $(simplify_gh_url "$KERNEL_REPO")"
 git clone -q --depth=1 $KERNEL_REPO -b $KERNEL_BRANCH $KSRC
-
 cd $KSRC
 LINUX_VERSION=$(make kernelversion)
 DEFCONFIG_FILE=$(find ./arch/arm64/configs -name "$KERNEL_DEFCONFIG")
 cd $workdir
 
-# # Set KernelSU Variant
+# Set KernelSU Variant
 log "Setting KernelSU variant..."
 VARIANT="KSUN"
 
@@ -39,7 +41,6 @@ if [[ -z "$CLANG_BRANCH" ]]; then
   mkdir -p "$CLANG_DIR"
   tar -xf tarball -C "$CLANG_DIR"
   rm tarball
-
   if [[ $(find "$CLANG_DIR" -mindepth 1 -maxdepth 1 -type d | wc -l) -eq 1 ]] \
     && [[ $(find "$CLANG_DIR" -mindepth 1 -maxdepth 1 -type f | wc -l) -eq 0 ]]; then
     SINGLE_DIR=$(find "$CLANG_DIR" -mindepth 1 -maxdepth 1 -type d)
@@ -50,7 +51,6 @@ else
   log "🔽 Cloning Clang..."
   git clone --depth=1 -q "$CLANG_URL" -b "$CLANG_BRANCH" "$CLANG_DIR"
 fi
-
 export PATH="$CLANG_DIR/bin:$PATH"
 
 # Extract clang version
@@ -74,10 +74,8 @@ for KSU_PATH in drivers/staging/kernelsu drivers/kernelsu KernelSU; do
   if [[ -d $KSU_PATH ]]; then
     log "KernelSU driver found in $KSU_PATH, Removing..."
     KSU_DIR=$(dirname "$KSU_PATH")
-
     [[ -f "$KSU_DIR/Kconfig" ]] && sed -i '/kernelsu/d' $KSU_DIR/Kconfig
     [[ -f "$KSU_DIR/Makefile" ]] && sed -i '/kernelsu/d' $KSU_DIR/Makefile
-
     rm -rf $KSU_PATH
   fi
 done
@@ -92,35 +90,37 @@ config --disable CONFIG_KSU_SUSFS
 # ✅ NEW BRANDING SECTION
 # ---
 log "🧹 Finalizing build configuration with branding..."
-
-# Get the GitHub Release Tag, using HSKY4 as a fallback for local builds
 RELEASE_TAG="${GITHUB_REF_NAME:-HSKY4}"
-
-# This sets the string that is appended to the base kernel version for `uname -r`
 INTERNAL_BRAND="-${KERNEL_NAME}-${RELEASE_TAG}-${VARIANT}"
-
-# This defines the user-facing name for the zip file and installer string
 export KERNEL_RELEASE_NAME="${KERNEL_NAME}-${RELEASE_TAG}-${LINUX_VERSION}-${VARIANT}"
 
-
-# Apply branding-specific modifications from your snippet
 if [ -f "./common/build.config.gki" ]; then
     log "Patching build.config.gki for branding..."
     sed -i 's/check_defconfig//' ./common/build.config.gki
 fi
 
-# Set the kernel's local version for uname -r and disable auto-generation
 config --set-str CONFIG_LOCALVERSION "$INTERNAL_BRAND"
 config --disable CONFIG_LOCALVERSION_AUTO
 log "✅ Internal kernel version set to: ${LINUX_VERSION}${INTERNAL_BRAND}"
 log "✅ User-facing release name set to: $KERNEL_RELEASE_NAME"
 
-
 # Declare needed variables
 export KBUILD_BUILD_USER="$USER"
 export KBUILD_BUILD_HOST="$HOST"
 export KBUILD_BUILD_TIMESTAMP=$(date)
-BUILD_FLAGS="-j12 ARCH=arm64 LLVM=1 LLVM_IAS=1 O=out CROSS_COMPILE=$CROSS_COMPILE_PREFIX"
+
+# ────────────────────────────────────────────────
+#   CONTROL PARALLELISM & DISABLE LTO FOR GITHUB
+# ────────────────────────────────────────────────
+if [[ -n "$GITHUB_ACTIONS" ]]; then
+    JOBS=4
+    log "GitHub Actions detected → using low parallelism (-j$JOBS) to avoid OOM"
+else
+    JOBS=$(nproc --all)
+fi
+
+BUILD_FLAGS="-j$JOBS ARCH=arm64 LLVM=1 LLVM_IAS=1 O=out CROSS_COMPILE=$CROSS_COMPILE_PREFIX"
+
 KERNEL_IMAGE="$KSRC/out/arch/arm64/boot/Image"
 KMI_CHECK="$workdir/scripts/KMI_function_symbols_test.py"
 MODULE_SYMVERS="$KSRC/out/Module.symvers"
@@ -136,41 +136,48 @@ text=$(
 EOF
 )
 MESSAGE_ID=$(send_msg "$text" 2>&1 | jq -r .result.message_id)
-
-# --- SAVE MSG ID FOR GITHUB WORKFLOW ---
 echo "MESSAGE_ID=$MESSAGE_ID" >> $GITHUB_ENV
-# ---------------------------------------
-# === VERY IMPORTANT: Keep GitHub Actions alive during long/silent compiles ===
-# GitHub kills "quiet" jobs after ~60-90 min if no output
+
+# === KEEP-ALIVE WITH BETTER MEMORY MONITORING ===
 (
     while true; do
-        echo "[KEEP-ALIVE] Still running... $(date '+%Y-%m-%d %H:%M:%S PST')"
-        # Optional: show some resource usage to prove it's alive and help debug
+        echo "[KEEP-ALIVE $(date '+%H:%M:%S')] Avail RAM: $(free -h | awk '/Mem:/ {print $7}')   Swap: $(free -h | awk '/Swap:/ {print $3 "/" $2}')"
         echo "  Load avg: $(uptime | awk -F'load average: ' '{print $2}')"
-        free -h | grep Mem
-        echo "---------------------"
-        sleep 180  # Every 3 minutes — frequent enough to prevent kill, not too spammy
+        sleep 120
     done
 ) &
 HEARTBEAT_PID=$!
-disown $HEARTBEAT_PID  # So it survives even if script exits early
+disown $HEARTBEAT_PID
 
 ## Build GKI
 log "Generating config..."
 make $BUILD_FLAGS $KERNEL_DEFCONFIG
 
-# Upload defconfig if we are doing defconfig
+# Force disable LTO / ThinLTO (biggest RAM & time saver on weak runners)
+log "Disabling LTO/ThinLTO to prevent OOM kill..."
+sed -i '/CONFIG_LTO/d' out/.config || true
+sed -i '/CONFIG_THINLTO/d' out/.config || true
+echo "CONFIG_LTO_NONE=y"          >> out/.config
+echo "CONFIG_LTO_CLANG=n"         >> out/.config
+echo "CONFIG_THINLTO=n"           >> out/.config
+make $BUILD_FLAGS olddefconfig
+
+# Upload defconfig if requested
 if [[ $TODO == "defconfig" ]]; then
   log "Uploading defconfig..."
   upload_file $KSRC/out/.config
+  kill $HEARTBEAT_PID 2>/dev/null || true
   exit 0
 fi
 
 # Build the actual kernel
 log "Building kernel..."
 make $BUILD_FLAGS Image modules
+#           ^^^^^^^^
+#     If still dies → try changing to: make $BUILD_FLAGS Image
+#     (skip modules for testing)
 
-# Check KMI Function symbol
+# Check KMI symbols
 $KMI_CHECK "$KSRC/android/abi_gki_aarch64.xml" "$MODULE_SYMVERS"
 
 ## Post-compiling stuff
@@ -184,30 +191,23 @@ git clone -q --depth=1 $ANYKERNEL_REPO -b $ANYKERNEL_BRANCH anykernel
 if [[ $STATUS == "BETA" ]]; then
   BUILD_DATE=$(date -d "$KBUILD_BUILD_TIMESTAMP" +"%Y%m%d-%H%M")
   ZIP_NAME=${ZIP_NAME//BUILD_DATE/$BUILD_DATE}
-  sed -i \
-    "s/kernel.string=.*/kernel.string=${KERNEL_RELEASE_NAME} (${BUILD_DATE})/g" \
-    $workdir/anykernel/anykernel.sh
+  sed -i "s/kernel.string=.*/kernel.string=${KERNEL_RELEASE_NAME} (${BUILD_DATE})/g" $workdir/anykernel/anykernel.sh
 else
   ZIP_NAME=${ZIP_NAME//-BUILD_DATE/}
-  sed -i \
-    "s/kernel.string=.*/kernel.string=${KERNEL_RELEASE_NAME}/g" \
-    $workdir/anykernel/anykernel.sh
+  sed -i "s/kernel.string=.*/kernel.string=${KERNEL_RELEASE_NAME}/g" $workdir/anykernel/anykernel.sh
 fi
 
-# Zip the anykernel
+# Zip
 cd anykernel
 log "Zipping anykernel..."
 cp $KERNEL_IMAGE .
 zip -r9 $workdir/$ZIP_NAME ./*
 cd -
 
-# Logic for generating BootIMG removed.
-
 if [[ $STATUS != "BETA" ]]; then
   echo "BASE_NAME=$KERNEL_NAME-$VARIANT" >> $GITHUB_ENV
   mkdir -p $workdir/artifacts
-  # Only move zips, removed logic for moving .img
-  mv $workdir/*.zip $workdir/artifacts
+  mv $workdir/*.zip $workdir/artifacts 2>/dev/null || true
 fi
 
 if [[ $LAST_BUILD == "true" && $STATUS != "BETA" ]]; then
@@ -223,11 +223,9 @@ if [[ $STATUS == "BETA" ]]; then
   reply_file "$MESSAGE_ID" "$workdir/$ZIP_NAME"
   reply_file "$MESSAGE_ID" "$workdir/build.log"
 else
-  # Modified: Don't reply here. The workflow will send the artifact link.
   log "✅ Build Succeeded. Artifact link will be sent by GitHub Action."
 fi
 
-# Clean up the background heartbeat (good practice)
+# Cleanup heartbeat
 kill $HEARTBEAT_PID 2>/dev/null || true
-
 exit 0
