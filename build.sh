@@ -120,7 +120,7 @@ log "✅ User-facing release name set to: $KERNEL_RELEASE_NAME"
 export KBUILD_BUILD_USER="$USER"
 export KBUILD_BUILD_HOST="$HOST"
 export KBUILD_BUILD_TIMESTAMP=$(date)
-BUILD_FLAGS="-j$(nproc --all) ARCH=arm64 LLVM=1 LLVM_IAS=1 O=out CROSS_COMPILE=$CROSS_COMPILE_PREFIX"
+BUILD_FLAGS="-j12 ARCH=arm64 LLVM=1 LLVM_IAS=1 O=out CROSS_COMPILE=$CROSS_COMPILE_PREFIX"
 KERNEL_IMAGE="$KSRC/out/arch/arm64/boot/Image"
 KMI_CHECK="$workdir/scripts/KMI_function_symbols_test.py"
 MODULE_SYMVERS="$KSRC/out/Module.symvers"
@@ -140,6 +140,20 @@ MESSAGE_ID=$(send_msg "$text" 2>&1 | jq -r .result.message_id)
 # --- SAVE MSG ID FOR GITHUB WORKFLOW ---
 echo "MESSAGE_ID=$MESSAGE_ID" >> $GITHUB_ENV
 # ---------------------------------------
+# === VERY IMPORTANT: Keep GitHub Actions alive during long/silent compiles ===
+# GitHub kills "quiet" jobs after ~60-90 min if no output
+(
+    while true; do
+        echo "[KEEP-ALIVE] Still running... $(date '+%Y-%m-%d %H:%M:%S PST')"
+        # Optional: show some resource usage to prove it's alive and help debug
+        echo "  Load avg: $(uptime | awk -F'load average: ' '{print $2}')"
+        free -h | grep Mem
+        echo "---------------------"
+        sleep 180  # Every 3 minutes — frequent enough to prevent kill, not too spammy
+    done
+) &
+HEARTBEAT_PID=$!
+disown $HEARTBEAT_PID  # So it survives even if script exits early
 
 ## Build GKI
 log "Generating config..."
@@ -212,5 +226,8 @@ else
   # Modified: Don't reply here. The workflow will send the artifact link.
   log "✅ Build Succeeded. Artifact link will be sent by GitHub Action."
 fi
+
+# Clean up the background heartbeat (good practice)
+kill $HEARTBEAT_PID 2>/dev/null || true
 
 exit 0
