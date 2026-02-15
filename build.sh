@@ -21,9 +21,47 @@ ulimit -s unlimited
 KSRC="$workdir/ksrc"
 log "Cloning kernel source from $(simplify_gh_url "$KERNEL_REPO")"
 git clone -q --depth=1 $KERNEL_REPO -b $KERNEL_BRANCH $KSRC
+
 cd $KSRC
 LINUX_VERSION=$(make kernelversion)
-DEFCONFIG_FILE=$(find ./arch/arm64/configs -name "$KERNEL_DEFCONFIG")
+
+# ────────────────────────────────────────────────
+# AUTO-DETECT DEFCONFIG (force prefer gki_defconfig if exists)
+# ────────────────────────────────────────────────
+log "Detecting defconfig file..."
+
+DEFCONFIG_CANDIDATES=(
+  "gki_defconfig"               # your preferred one
+  "gki.aarch64_defconfig"
+  "android_gki_defconfig"
+  "vendor_gki_defconfig"
+  "defconfig"
+)
+
+DEFCONFIG_FILE=""
+KERNEL_DEFCONFIG=""
+
+for cand in "${DEFCONFIG_CANDIDATES[@]}"; do
+  if [[ -f "arch/arm64/configs/$cand" ]]; then
+    DEFCONFIG_FILE="arch/arm64/configs/$cand"
+    KERNEL_DEFCONFIG="$cand"
+    log "Found preferred defconfig: $KERNEL_DEFCONFIG"
+    break
+  fi
+done
+
+if [[ -z "$DEFCONFIG_FILE" ]]; then
+  log "Preferred gki_defconfig not found. Trying any *defconfig..."
+  DEFCONFIG_FILE=$(find arch/arm64/configs -name "*defconfig" -print -quit 2>/dev/null)
+  if [[ -n "$DEFCONFIG_FILE" ]]; then
+    KERNEL_DEFCONFIG=$(basename "$DEFCONFIG_FILE")
+    log "Auto-detected fallback defconfig: $KERNEL_DEFCONFIG"
+  else
+    log "ERROR: No defconfig file found in arch/arm64/configs/!"
+    exit 1
+  fi
+fi
+
 cd $workdir
 
 # Set KernelSU Variant
@@ -87,13 +125,11 @@ config --enable CONFIG_KSU
 config --disable CONFIG_KSU_MANUAL_SU
 
 # ────────────────────────────────────────────────
-#   ADD SUSFS (root hiding patches) - AFTER KernelSU
+# ADD SUSFS (root hiding patches) - AFTER KernelSU
 # ────────────────────────────────────────────────
 log "Adding SuSFS patches for advanced root hiding..."
-
 SUSFS_REPO="https://gitlab.com/simonpunk/susfs4ksu.git"
-SUSFS_BRANCH="gki-android12-5.10-dev"  # confirmed for your kernel
-
+SUSFS_BRANCH="gki-android12-5.10-dev"
 git clone --depth=1 -b "$SUSFS_BRANCH" "$SUSFS_REPO" ../susfs_temp || {
   log "Failed to clone susfs4ksu repository!"
   exit 1
@@ -103,7 +139,7 @@ git clone --depth=1 -b "$SUSFS_BRANCH" "$SUSFS_REPO" ../susfs_temp || {
 cp -rf ../susfs_temp/kernel_patches/fs/* fs/ 2>/dev/null || true
 cp -rf ../susfs_temp/kernel_patches/include/linux/* include/linux/ 2>/dev/null || true
 
-# Apply the main integration patch (correct name with underscore)
+# Apply the main integration patch
 MAIN_PATCH="../susfs_temp/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch"
 if [[ -f "$MAIN_PATCH" ]]; then
   log "Applying main SuSFS patch: $(basename "$MAIN_PATCH")"
@@ -115,7 +151,7 @@ else
   log "Warning: Main patch 50_add_susfs_in_gki-android12-5.10.patch not found - check branch!"
 fi
 
-# Apply any other .patch files (fixes, etc.)
+# Apply any other .patch files
 for patch in ../susfs_temp/kernel_patches/*.patch; do
   if [[ -f "$patch" && "$patch" != "$MAIN_PATCH" ]]; then
     log "Applying extra SuSFS patch: $(basename "$patch")"
@@ -128,25 +164,17 @@ rm -rf ../susfs_temp
 
 cd $workdir
 
-# Clean up
-rm -rf ../susfs_temp
-
-cd $workdir
-
 # ---
 # ✅ NEW BRANDING SECTION
 # ---
 log "🧹 Finalizing build configuration with branding..."
-
 RELEASE_TAG="${GITHUB_REF_NAME:-HSKY4}"
 INTERNAL_BRAND="-${KERNEL_NAME}-${RELEASE_TAG}-${VARIANT}"
 export KERNEL_RELEASE_NAME="${KERNEL_NAME}-${RELEASE_TAG}-${LINUX_VERSION}-${VARIANT}"
-
 if [ -f "./common/build.config.gki" ]; then
     log "Patching build.config.gki for branding..."
     sed -i 's/check_defconfig//' ./common/build.config.gki
 fi
-
 config --set-str CONFIG_LOCALVERSION "$INTERNAL_BRAND"
 config --disable CONFIG_LOCALVERSION_AUTO
 
