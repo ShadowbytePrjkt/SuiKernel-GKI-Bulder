@@ -14,7 +14,7 @@ source $workdir/functions.sh
 # Set timezone
 export TZ="$TIMEZONE"
 
-# Allow larger stack size (helps some clang crashes)
+# Allow larger stack size
 ulimit -s unlimited
 
 # Clone kernel source
@@ -25,13 +25,18 @@ git clone -q --depth=1 $KERNEL_REPO -b $KERNEL_BRANCH $KSRC
 cd $KSRC
 LINUX_VERSION=$(make kernelversion)
 
-# Use standard Android GKI config generation
-log "Configuring GKI kernel using standard 'make gki_defconfig'..."
+# Configure GKI with BUILD_CONFIG
+log "Configuring GKI kernel with BUILD_CONFIG=common/build.config.gki..."
 
-KERNEL_DEFCONFIG="gki_defconfig"
+BUILD_CONFIG=common/build.config.gki make gki_defconfig || {
+  log "make gki_defconfig failed! Trying basic defconfig..."
+  make defconfig || exit 1
+}
 
-log "Available GKI fragments:"
-ls -l arch/arm64/configs/*gki*.fragment 2>/dev/null || log "(no fragments listed)"
+if [[ ! -d "out" ]]; then
+  log "out/ missing after make - creating it"
+  mkdir -p out
+fi
 
 cd $workdir
 
@@ -39,7 +44,6 @@ cd $workdir
 log "Setting KernelSU variant..."
 VARIANT="KSUN"
 
-# Replace Placeholder in zip name
 ZIP_NAME=${ZIP_NAME//KVER/$LINUX_VERSION}
 ZIP_NAME=${ZIP_NAME//VARIANT/$VARIANT}
 
@@ -63,10 +67,8 @@ else
 fi
 export PATH="$CLANG_DIR/bin:$PATH"
 
-# Extract clang version
 COMPILER_STRING=$(clang -v 2>&1 | head -n 1 | sed 's/(https..*//' | sed 's/ version//')
 
-# Clone GCC if not available
 if ! ls $CLANG_DIR/bin | grep -q "aarch64-linux-gnu"; then
   log "🔽 Cloning GCC..."
   git clone --depth=1 -q https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-gnu-9.3 $workdir/gcc
@@ -78,8 +80,7 @@ fi
 
 cd $KSRC
 
-## KernelSU setup
-# Remove existing KernelSU drivers
+# KernelSU setup
 for KSU_PATH in drivers/staging/kernelsu drivers/kernelsu KernelSU; do
   if [[ -d $KSU_PATH ]]; then
     log "KernelSU driver found in $KSU_PATH, Removing..."
@@ -90,19 +91,13 @@ for KSU_PATH in drivers/staging/kernelsu drivers/kernelsu KernelSU; do
   fi
 done
 
-# Install kernelsu (Next)
 install_ksu pershoot/KernelSU-Next "dev"
 
-# ────────────────────────────────────────────────
-# ADD SUSFS (root hiding patches) - AFTER KernelSU
-# ────────────────────────────────────────────────
-log "Adding SuSFS patches for advanced root hiding..."
+# Add SuSFS
+log "Adding SuSFS patches..."
 SUSFS_REPO="https://gitlab.com/simonpunk/susfs4ksu.git"
 SUSFS_BRANCH="gki-android12-5.10-dev"
-git clone --depth=1 -b "$SUSFS_BRANCH" "$SUSFS_REPO" ../susfs_temp || {
-  log "Failed to clone susfs4ksu repository!"
-  exit 1
-}
+git clone --depth=1 -b "$SUSFS_BRANCH" "$SUSFS_REPO" ../susfs_temp || exit 1
 
 cp -rf ../susfs_temp/kernel_patches/fs/* fs/ 2>/dev/null || true
 cp -rf ../susfs_temp/kernel_patches/include/linux/* include/linux/ 2>/dev/null || true
@@ -110,13 +105,13 @@ cp -rf ../susfs_temp/kernel_patches/include/linux/* include/linux/ 2>/dev/null |
 MAIN_PATCH="../susfs_temp/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch"
 if [[ -f "$MAIN_PATCH" ]]; then
   log "Applying main SuSFS patch: $(basename "$MAIN_PATCH")"
-  patch -p1 --no-backup-if-mismatch < "$MAIN_PATCH" || log "Main SuSFS patch failed (may need manual fix)"
+  patch -p1 --no-backup-if-mismatch < "$MAIN_PATCH" || log "Main patch failed"
 fi
 
 for patch in ../susfs_temp/kernel_patches/*.patch; do
   if [[ -f "$patch" && "$patch" != "$MAIN_PATCH" ]]; then
     log "Applying extra SuSFS patch: $(basename "$patch")"
-    patch -p1 --no-backup-if-mismatch < "$patch" || log "Extra patch failed (optional)"
+    patch -p1 --no-backup-if-mismatch < "$patch" || log "Extra patch failed"
   fi
 done
 
@@ -124,9 +119,7 @@ rm -rf ../susfs_temp
 
 cd $workdir
 
-# ---
-# ✅ NEW BRANDING SECTION (direct config calls)
-# ---
+# Branding with direct config
 log "🧹 Finalizing build configuration with branding..."
 
 RELEASE_TAG="${GITHUB_REF_NAME:-HSKY4}"
@@ -134,42 +127,38 @@ INTERNAL_BRAND="-${KERNEL_NAME}-${RELEASE_TAG}-${VARIANT}"
 export KERNEL_RELEASE_NAME="${KERNEL_NAME}-${RELEASE_TAG}-${LINUX_VERSION}-${VARIANT}"
 
 if [ -f "./common/build.config.gki" ]; then
-    log "Patching build.config.gki for branding..."
+    log "Patching build.config.gki..."
     sed -i 's/check_defconfig//' ./common/build.config.gki
 fi
 
-cd "$KSRC/out"
+if [[ -d "$KSRC/out" ]]; then
+  cd "$KSRC/out"
+  log "Applying config directly..."
 
-log "Applying config changes directly with scripts/config..."
+  ../scripts/config --set-str CONFIG_LOCALVERSION "$INTERNAL_BRAND"
+  ../scripts/config --disable CONFIG_LOCALVERSION_AUTO
 
-# Branding
-../scripts/config --set-str CONFIG_LOCALVERSION "$INTERNAL_BRAND"
-../scripts/config --disable CONFIG_LOCALVERSION_AUTO
+  ../scripts/config --enable CONFIG_KSU
+  ../scripts/config --disable CONFIG_KSU_MANUAL_SU
 
-# KernelSU basics
-../scripts/config --enable CONFIG_KSU
-../scripts/config --disable CONFIG_KSU_MANUAL_SU
+  ../scripts/config --enable CONFIG_KSU_SUSFS 2>/dev/null || log "SuSFS option not found"
+  ../scripts/config --enable CONFIG_KSU_SUSFS_AUTO_ADD 2>/dev/null || log "SuSFS auto add not found"
 
-# SuSFS (safe if not present)
-../scripts/config --enable CONFIG_KSU_SUSFS 2>/dev/null || log "CONFIG_KSU_SUSFS not available (optional)"
-../scripts/config --enable CONFIG_KSU_SUSFS_AUTO_ADD 2>/dev/null || log "CONFIG_KSU_SUSFS_AUTO_ADD not available (optional)"
-
-cd "$workdir"
+  cd "$workdir"
+else
+  log "WARNING: out/ missing - skipping direct config. Branding may be incomplete."
+fi
 
 log "✅ Internal kernel version set to: ${LINUX_VERSION}${INTERNAL_BRAND}"
 log "✅ User-facing release name set to: $KERNEL_RELEASE_NAME"
 
-# Declare needed variables
 export KBUILD_BUILD_USER="$USER"
 export KBUILD_BUILD_HOST="$HOST"
 export KBUILD_BUILD_TIMESTAMP=$(date)
 
-# ────────────────────────────────────────────────
-# CONTROL PARALLELISM & DISABLE LTO FOR GITHUB
-# ────────────────────────────────────────────────
 if [[ -n "$GITHUB_ACTIONS" ]]; then
     JOBS=4
-    log "GitHub Actions detected → using low parallelism (-j$JOBS) to avoid OOM"
+    log "GitHub Actions detected → using low parallelism (-j$JOBS)"
 else
     JOBS=$(nproc --all)
 fi
@@ -193,7 +182,7 @@ EOF
 MESSAGE_ID=$(send_msg "$text" 2>&1 | jq -r .result.message_id)
 echo "MESSAGE_ID=$MESSAGE_ID" >> $GITHUB_ENV
 
-# === KEEP-ALIVE WITH BETTER MEMORY MONITORING ===
+# KEEP-ALIVE
 (
     while true; do
         echo "[KEEP-ALIVE $(date '+%H:%M:%S')] Avail RAM: $(free -h | awk '/Mem:/ {print $7}') Swap: $(free -h | awk '/Swap:/ {print $3 "/" $2}')"
@@ -204,11 +193,10 @@ echo "MESSAGE_ID=$MESSAGE_ID" >> $GITHUB_ENV
 HEARTBEAT_PID=$!
 disown $HEARTBEAT_PID
 
-## Build GKI
 log "Generating config..."
 make $BUILD_FLAGS gki_defconfig
 
-log "Disabling LTO/ThinLTO to prevent OOM kill..."
+log "Disabling LTO/ThinLTO..."
 sed -i '/CONFIG_LTO/d' out/.config || true
 sed -i '/CONFIG_THINLTO/d' out/.config || true
 echo "CONFIG_LTO_NONE=y" >> out/.config
@@ -216,7 +204,6 @@ echo "CONFIG_LTO_CLANG=n" >> out/.config
 echo "CONFIG_THINLTO=n" >> out/.config
 make $BUILD_FLAGS olddefconfig
 
-# Upload defconfig if requested
 if [[ $TODO == "defconfig" ]]; then
   log "Uploading defconfig..."
   upload_file $KSRC/out/.config
@@ -224,31 +211,25 @@ if [[ $TODO == "defconfig" ]]; then
   exit 0
 fi
 
-# Build the actual kernel
 log "Building kernel..."
 make $BUILD_FLAGS Image modules
 
-# Check KMI symbols
 $KMI_CHECK "$KSRC/android/abi_gki_aarch64.xml" "$MODULE_SYMVERS"
 
-## Post-compiling stuff
 cd $workdir
 
-# Clone AnyKernel
-log "Cloning anykernel from $(simplify_gh_url "$ANYKERNEL_REPO")"
+log "Cloning anykernel..."
 git clone -q --depth=1 $ANYKERNEL_REPO -b $ANYKERNEL_BRANCH anykernel
 
-# Set kernel string in anykernel
 if [[ $STATUS == "BETA" ]]; then
   BUILD_DATE=$(date -d "$KBUILD_BUILD_TIMESTAMP" +"%Y%m%d-%H%M")
   ZIP_NAME=${ZIP_NAME//BUILD_DATE/$BUILD_DATE}
-  sed -i "s/kernel.string=.*/kernel.string=${KERNEL_RELEASE_NAME} (${BUILD_DATE})/g" $workdir/anykernel/anykernel.sh
+  sed -i "s/kernel.string=.*/kernel.string=${KERNEL_RELEASE_NAME} (${BUILD_DATE})/g" anykernel/anykernel.sh
 else
   ZIP_NAME=${ZIP_NAME//-BUILD_DATE/}
-  sed -i "s/kernel.string=.*/kernel.string=${KERNEL_RELEASE_NAME}/g" $workdir/anykernel/anykernel.sh
+  sed -i "s/kernel.string=.*/kernel.string=${KERNEL_RELEASE_NAME}/g" anykernel/anykernel.sh
 fi
 
-# Zip the anykernel
 cd anykernel
 log "Zipping anykernel..."
 cp $KERNEL_IMAGE .
@@ -277,6 +258,5 @@ else
   log "✅ Build Succeeded. Artifact link will be sent by GitHub Action."
 fi
 
-# Cleanup heartbeat
 kill $HEARTBEAT_PID 2>/dev/null || true
 exit 0
