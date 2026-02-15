@@ -2,16 +2,22 @@
 
 workdir=$(pwd)
 
+# Handle error
 set -e
 exec > >(tee $workdir/build.log) 2>&1
 trap 'error "Failed at line $LINENO [$BASH_COMMAND]"' ERR
 
+# Import config and functions
 source $workdir/config.sh
 source $workdir/functions.sh
 
+# Set timezone
 export TZ="$TIMEZONE"
+
+# Allow larger stack size
 ulimit -s unlimited
 
+# Clone kernel source
 KSRC="$workdir/ksrc"
 log "Cloning kernel source from $(simplify_gh_url "$KERNEL_REPO")"
 git clone -q --depth=1 $KERNEL_REPO -b $KERNEL_BRANCH $KSRC
@@ -21,11 +27,15 @@ LINUX_VERSION=$(make kernelversion)
 
 cd $workdir
 
+# Set KernelSU Variant
 log "Setting KernelSU variant..."
 VARIANT="KSUN"
+
+# Replace Placeholder in zip name
 ZIP_NAME=${ZIP_NAME//KVER/$LINUX_VERSION}
 ZIP_NAME=${ZIP_NAME//VARIANT/$VARIANT}
 
+# Download Clang
 CLANG_DIR="$workdir/clang"
 if [[ -z "$CLANG_BRANCH" ]]; then
   log "🔽 Downloading Clang..."
@@ -45,8 +55,10 @@ else
 fi
 export PATH="$CLANG_DIR/bin:$PATH"
 
+# Extract clang version
 COMPILER_STRING=$(clang -v 2>&1 | head -n 1 | sed 's/(https..*//' | sed 's/ version//')
 
+# Clone GCC if not available
 if ! ls $CLANG_DIR/bin | grep -q "aarch64-linux-gnu"; then
   log "🔽 Cloning GCC..."
   git clone --depth=1 -q https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-gnu-9.3 $workdir/gcc
@@ -58,7 +70,7 @@ fi
 
 cd $KSRC
 
-# KernelSU setup
+## KernelSU setup
 for KSU_PATH in drivers/staging/kernelsu drivers/kernelsu KernelSU; do
   if [[ -d $KSU_PATH ]]; then
     log "KernelSU driver found in $KSU_PATH, Removing..."
@@ -71,49 +83,59 @@ done
 
 install_ksu pershoot/KernelSU-Next "dev"
 
-# SuSFS patches
-log "Adding SuSFS patches..."
+# ────────────────────────────────────────────────
+# ADD SUSFS (root hiding patches)
+# ────────────────────────────────────────────────
+log "Adding SuSFS patches for advanced root hiding..."
 SUSFS_REPO="https://gitlab.com/simonpunk/susfs4ksu.git"
 SUSFS_BRANCH="gki-android12-5.10-dev"
-git clone --depth=1 -b "$SUSFS_BRANCH" "$SUSFS_REPO" ../susfs_temp || exit 1
+git clone --depth=1 -b "$SUSFS_BRANCH" "$SUSFS_REPO" ../susfs_temp || {
+  log "Failed to clone susfs4ksu!"
+  exit 1
+}
 
 cp -rf ../susfs_temp/kernel_patches/fs/* fs/ 2>/dev/null || true
 cp -rf ../susfs_temp/kernel_patches/include/linux/* include/linux/ 2>/dev/null || true
 
 MAIN_PATCH="../susfs_temp/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch"
 if [[ -f "$MAIN_PATCH" ]]; then
-  log "Applying main SuSFS patch..."
-  patch -p1 --no-backup-if-mismatch < "$MAIN_PATCH" || log "Main patch failed"
+  log "Applying main SuSFS patch: $(basename "$MAIN_PATCH")"
+  patch -p1 --no-backup-if-mismatch < "$MAIN_PATCH" || log "Main SuSFS patch failed"
 fi
 
 for patch in ../susfs_temp/kernel_patches/*.patch; do
   if [[ -f "$patch" && "$patch" != "$MAIN_PATCH" ]]; then
-    log "Applying extra SuSFS patch..."
+    log "Applying extra SuSFS patch: $(basename "$patch")"
     patch -p1 --no-backup-if-mismatch < "$patch" || log "Extra patch failed"
   fi
 done
 
 rm -rf ../susfs_temp
 
-# Clean after patches
+# Clean source tree after patching
 log "Cleaning source tree with mrproper (after patching)..."
 make ARCH=arm64 mrproper
 
 cd $workdir
 
-# Configure
+# ────────────────────────────────────────────────
+# Configure GKI with BUILD_CONFIG and O=out
+# ────────────────────────────────────────────────
 log "Configuring GKI kernel with BUILD_CONFIG=common/build.config.gki and O=out..."
 
 cd $KSRC
 mkdir -p out
+
 BUILD_CONFIG=common/build.config.gki O=out make gki_defconfig || {
-  log "gki_defconfig failed! Fallback..."
+  log "gki_defconfig failed! Fallback to basic defconfig..."
   make defconfig || exit 1
 }
 
 cd $workdir
 
-# Branding
+# ────────────────────────────────────────────────
+# BRANDING & CONFIG (direct in out/)
+# ────────────────────────────────────────────────
 log "🧹 Finalizing build configuration with branding..."
 
 RELEASE_TAG="${GITHUB_REF_NAME:-HSKY4}"
@@ -121,6 +143,7 @@ INTERNAL_BRAND="-${KERNEL_NAME}-${RELEASE_TAG}-${VARIANT}"
 export KERNEL_RELEASE_NAME="${KERNEL_NAME}-${RELEASE_TAG}-${LINUX_VERSION}-${VARIANT}"
 
 if [ -f "$KSRC/common/build.config.gki" ]; then
+    log "Patching build.config.gki..."
     sed -i 's/check_defconfig//' "$KSRC/common/build.config.gki"
 fi
 
@@ -134,10 +157,12 @@ log "Applying config changes..."
 ../scripts/config --enable CONFIG_KSU
 ../scripts/config --disable CONFIG_KSU_MANUAL_SU
 
+../scripts/config --enable CONFIG_MODULES  # Required for modules build
+
 ../scripts/config --enable CONFIG_KSU_SUSFS 2>/dev/null || log "CONFIG_KSU_SUSFS not present"
 ../scripts/config --enable CONFIG_KSU_SUSFS_AUTO_ADD 2>/dev/null || log "CONFIG_KSU_SUSFS_AUTO_ADD not present"
 
-# Disable LTO inside out/
+# Disable LTO
 log "Disabling LTO/ThinLTO..."
 sed -i '/CONFIG_LTO/d' .config || true
 sed -i '/CONFIG_THINLTO/d' .config || true
@@ -163,13 +188,9 @@ fi
 
 BUILD_FLAGS="-j$JOBS ARCH=arm64 LLVM=1 LLVM_IAS=1 O=out CROSS_COMPILE=$CROSS_COMPILE_PREFIX"
 
-# Clean again before build (to remove any generated root files from config)
-cd $KSRC
-log "Final clean before compilation (mrproper again)..."
-make ARCH=arm64 mrproper
-cd "$workdir"
-
-# Build
+# ────────────────────────────────────────────────
+# Build the kernel
+# ────────────────────────────────────────────────
 log "Building kernel..."
 cd $KSRC
 BUILD_CONFIG=common/build.config.gki O=out make $BUILD_FLAGS Image modules || exit 1
@@ -177,10 +198,12 @@ cd $workdir
 
 $KMI_CHECK "$KSRC/android/abi_gki_aarch64.xml" "$KSRC/out/Module.symvers"
 
-# Post-compiling
+# ────────────────────────────────────────────────
+# Post-compiling stuff
+# ────────────────────────────────────────────────
 cd $workdir
 
-log "Cloning anykernel..."
+log "Cloning anykernel from $(simplify_gh_url "$ANYKERNEL_REPO")"
 git clone -q --depth=1 $ANYKERNEL_REPO -b $ANYKERNEL_BRANCH anykernel
 
 if [[ $STATUS == "BETA" ]]; then
