@@ -71,57 +71,25 @@ done
 
 install_ksu pershoot/KernelSU-Next "dev"
 
-# SuSFS patches
-log "Adding SuSFS patches..."
-SUSFS_REPO="https://gitlab.com/simonpunk/susfs4ksu.git"
-SUSFS_BRANCH="gki-android12-5.10-dev"
-git clone --depth=1 -b "$SUSFS_BRANCH" "$SUSFS_REPO" ../susfs_temp || exit 1
-
-cp -rf ../susfs_temp/kernel_patches/fs/* fs/ 2>/dev/null || true
-cp -rf ../susfs_temp/kernel_patches/include/linux/* include/linux/ 2>/dev/null || true
-
-MAIN_PATCH="../susfs_temp/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch"
-if [[ -f "$MAIN_PATCH" ]]; then
-  log "Applying main SuSFS patch..."
-  patch -p1 --no-backup-if-mismatch < "$MAIN_PATCH" || log "Main patch failed"
-fi
-
-for patch in ../susfs_temp/kernel_patches/*.patch; do
-  if [[ -f "$patch" && "$patch" != "$MAIN_PATCH" ]]; then
-    log "Applying extra SuSFS patch..."
-    patch -p1 --no-backup-if-mismatch < "$patch" || log "Extra patch failed"
-  fi
-done
-
-rm -rf ../susfs_temp
-
-# Clean after patches
-log "Cleaning source tree with mrproper (after patching)..."
-make ARCH=arm64 mrproper
-
 cd $workdir
 
 # ────────────────────────────────────────────────
-# Two-step config to avoid dirty tree
+# Configure GKI
 # ────────────────────────────────────────────────
-log "Configuring GKI kernel (two-step to avoid dirty tree issues)..."
+log "Configuring GKI kernel..."
 
 cd $KSRC
 mkdir -p out
 
-# Step 1: config in root (creates root files)
-BUILD_CONFIG=common/build.config.gki make gki_defconfig || make defconfig || exit 1
-
-# Clean root files immediately
-make ARCH=arm64 mrproper
-
-# Step 2: config in out/
-BUILD_CONFIG=common/build.config.gki O=out make gki_defconfig || exit 1
+BUILD_CONFIG=common/build.config.gki O=out make gki_defconfig || {
+  log "gki_defconfig failed! Fallback to defconfig..."
+  make defconfig || exit 1
+}
 
 cd $workdir
 
 # ────────────────────────────────────────────────
-# BRANDING & CONFIG (direct in out/)
+# BRANDING & CONFIG
 # ────────────────────────────────────────────────
 log "🧹 Finalizing build configuration with branding..."
 
@@ -130,13 +98,10 @@ INTERNAL_BRAND="-${KERNEL_NAME}-${RELEASE_TAG}-${VARIANT}"
 export KERNEL_RELEASE_NAME="${KERNEL_NAME}-${RELEASE_TAG}-${LINUX_VERSION}-${VARIANT}"
 
 if [ -f "$KSRC/common/build.config.gki" ]; then
-    log "Patching build.config.gki..."
     sed -i 's/check_defconfig//' "$KSRC/common/build.config.gki"
 fi
 
 cd "$KSRC/out"
-
-log "Applying config changes..."
 
 ../scripts/config --set-str CONFIG_LOCALVERSION "$INTERNAL_BRAND"
 ../scripts/config --disable CONFIG_LOCALVERSION_AUTO
@@ -145,16 +110,6 @@ log "Applying config changes..."
 ../scripts/config --disable CONFIG_KSU_MANUAL_SU
 
 ../scripts/config --enable CONFIG_MODULES
-
-../scripts/config --enable CONFIG_KSU_SUSFS 2>/dev/null || log "CONFIG_KSU_SUSFS not present"
-../scripts/config --enable CONFIG_KSU_SUSFS_AUTO_ADD 2>/dev/null || log "CONFIG_KSU_SUSFS_AUTO_ADD not present"
-
-log "Disabling LTO/ThinLTO..."
-sed -i '/CONFIG_LTO/d' .config || true
-sed -i '/CONFIG_THINLTO/d' .config || true
-echo "CONFIG_LTO_NONE=y" >> .config
-echo "CONFIG_LTO_CLANG=n" >> .config
-echo "CONFIG_THINLTO=n" >> .config
 
 cd "$workdir"
 
@@ -174,13 +129,22 @@ fi
 
 BUILD_FLAGS="-j$JOBS ARCH=arm64 LLVM=1 LLVM_IAS=1 O=out CROSS_COMPILE=$CROSS_COMPILE_PREFIX"
 
-# Final clean before build
-cd $KSRC
-log "Final clean before compilation (mrproper again)..."
-make ARCH=arm64 mrproper
+# Disable LTO
+cd "$KSRC/out"
+log "Disabling LTO/ThinLTO..."
+sed -i '/CONFIG_LTO/d' .config || true
+sed -i '/CONFIG_THINLTO/d' .config || true
+echo "CONFIG_LTO_NONE=y" >> .config
+echo "CONFIG_LTO_CLANG=n" >> .config
+echo "CONFIG_THINLTO=n" >> .config
 cd "$workdir"
 
-# Build
+if [[ $TODO == "defconfig" ]]; then
+  log "Uploading defconfig..."
+  upload_file "$KSRC/out/.config"
+  exit 0
+fi
+
 log "Building kernel..."
 cd $KSRC
 BUILD_CONFIG=common/build.config.gki O=out make $BUILD_FLAGS Image modules || exit 1
@@ -231,5 +195,4 @@ else
   log "✅ Build Succeeded. Artifact link will be sent by GitHub Action."
 fi
 
-kill $HEARTBEAT_PID 2>/dev/null || true
 exit 0
