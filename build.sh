@@ -82,14 +82,14 @@ cd $KSRC
 mkdir -p out
 
 BUILD_CONFIG=common/build.config.gki O=out make gki_defconfig || {
-  log "gki_defconfig failed! Fallback to defconfig..."
+  log "gki_defconfig failed! Fallback..."
   make defconfig || exit 1
 }
 
 cd $workdir
 
 # ────────────────────────────────────────────────
-# BRANDING & CONFIG
+# BRANDING & CONFIG (direct in out/)
 # ────────────────────────────────────────────────
 log "🧹 Finalizing build configuration with branding..."
 
@@ -98,10 +98,13 @@ INTERNAL_BRAND="-${KERNEL_NAME}-${RELEASE_TAG}-${VARIANT}"
 export KERNEL_RELEASE_NAME="${KERNEL_NAME}-${RELEASE_TAG}-${LINUX_VERSION}-${VARIANT}"
 
 if [ -f "$KSRC/common/build.config.gki" ]; then
+    log "Patching build.config.gki..."
     sed -i 's/check_defconfig//' "$KSRC/common/build.config.gki"
 fi
 
 cd "$KSRC/out"
+
+log "Applying config changes..."
 
 ../scripts/config --set-str CONFIG_LOCALVERSION "$INTERNAL_BRAND"
 ../scripts/config --disable CONFIG_LOCALVERSION_AUTO
@@ -110,6 +113,19 @@ cd "$KSRC/out"
 ../scripts/config --disable CONFIG_KSU_MANUAL_SU
 
 ../scripts/config --enable CONFIG_MODULES
+
+# CPU governor: schedutil as default + fine-tune
+../scripts/config --enable CONFIG_CPU_FREQ_GOV_SCHEDUTIL
+../scripts/config --set-str CONFIG_CPU_FREQ_DEFAULT_GOV "schedutil"
+
+# Schedutil tuning (adjust numbers if you want more/less aggressive)
+../scripts/config --set-val CONFIG_SCHEDUTIL_GOV_UP_RATE_LIMIT 100     # us, lower = faster up
+../scripts/config --set-val CONFIG_SCHEDUTIL_GOV_DOWN_RATE_LIMIT 1000  # us, higher = slower down
+../scripts/config --set-val CONFIG_SCHEDUTIL_GOV_MARGIN 80             # aggressiveness (0-100)
+
+# I/O scheduler: SSG as default
+../scripts/config --enable CONFIG_MQ_IOSCHED_SSG
+../scripts/config --set-str CONFIG_DEFAULT_IOSCHED "ssg"
 
 cd "$workdir"
 
