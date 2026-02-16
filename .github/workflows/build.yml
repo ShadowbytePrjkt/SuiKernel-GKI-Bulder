@@ -89,15 +89,30 @@ jobs:
           sudo aptitude install -y libssl-dev
           pip install lxml
 
-      - name: Add massive swap for kernel linking
+      - name: Add large swap for kernel linking (safe version)
         run: |
-          sudo fallocate -l 20G /swapfile || sudo fallocate -l 16G /swapfile
+          # Show current swap status
+          sudo swapon --show || true
+          free -h
+
+          # Disable and remove existing swap (important!)
+          sudo swapoff -a || true
+          sudo rm -f /swapfile || true
+
+          # Create new 20G swapfile (fallback to 16G or 12G if disk space issue)
+          sudo fallocate -l 20G /swapfile || sudo fallocate -l 16G /swapfile || {
+          echo "Fallocate failed - using dd fallback"
+          sudo dd if=/dev/zero of=/swapfile bs=1M count=16384 status=progress
+          }
+
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
           sudo swapon /swapfile
+
+          # Verify
+          sudo swapon --show
           free -h
-          swapon --show
-          echo "Swap ready — virtual memory now has plenty of headroom"
+          echo "Swap setup complete - total virtual memory should now be ~20G+"
 
       - name: Run Build Script
         env:
