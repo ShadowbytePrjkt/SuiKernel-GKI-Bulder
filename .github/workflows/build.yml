@@ -89,29 +89,15 @@ jobs:
           sudo aptitude install -y libssl-dev
           pip install lxml
 
-      - name: Set up large swap to survive kernel build OOM
+      - name: Add massive swap for kernel linking
         run: |
-          # Show current swap status for logs
-          sudo swapon --show || true
-          free -h
-
-          # Disable all swap (important!)
-          sudo swapoff -a || true
-
-          # Remove existing /swapfile if it exists (force, ignore errors)
-          sudo rm -f /swapfile || true
-
-          # Create new 12 GB swapfile (fallback to 8 GB if disk space issue)
-          sudo fallocate -l 12G /swapfile || sudo fallocate -l 8G /swapfile || { echo "Fallocate failed - trying dd fallback"; sudo dd if=/dev/zero of=/swapfile bs=1M count=8192 status=progress; }
-
+          sudo fallocate -l 20G /swapfile || sudo fallocate -l 16G /swapfile
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
           sudo swapon /swapfile
-
-          # Verify
-          sudo swapon --show
           free -h
-          echo "Swap setup complete - total virtual mem should now be higher"
+          swapon --show
+          echo "Swap ready — virtual memory now has plenty of headroom"
 
       - name: Run Build Script
         env:
