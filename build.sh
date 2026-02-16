@@ -139,22 +139,6 @@ fi
 
 BUILD_FLAGS="-j$JOBS ARCH=arm64 LLVM=1 LLVM_IAS=1 O=out CROSS_COMPILE=$CROSS_COMPILE_PREFIX"
 
-# Disable LTO
-cd "$KSRC/out"
-log "Disabling LTO/ThinLTO..."
-sed -i '/CONFIG_LTO/d' .config || true
-sed -i '/CONFIG_THINLTO/d' .config || true
-echo "CONFIG_LTO_NONE=y" >> .config
-echo "CONFIG_LTO_CLANG=n" >> .config
-echo "CONFIG_THINLTO=n" >> .config
-cd "$workdir"
-
-if [[ $TODO == "defconfig" ]]; then
-  log "Uploading defconfig..."
-  upload_file "$KSRC/out/.config"
-  exit 0
-fi
-
 # Final clean before build
 cd $KSRC
 log "Final clean before compilation..."
