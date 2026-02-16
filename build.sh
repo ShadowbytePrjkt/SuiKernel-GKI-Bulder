@@ -74,17 +74,24 @@ install_ksu pershoot/KernelSU-Next "dev"
 cd $workdir
 
 # ────────────────────────────────────────────────
-# Configure GKI
+# Two-step config generation (fixes "not clean" error)
 # ────────────────────────────────────────────────
-log "Configuring GKI kernel..."
+log "Configuring GKI kernel (two-step to avoid dirty tree)..."
 
 cd $KSRC
 mkdir -p out
 
-BUILD_CONFIG=common/build.config.gki O=out make gki_defconfig || {
-  log "gki_defconfig failed! Fallback..."
+# Step 1: Generate config in root (creates necessary root files)
+BUILD_CONFIG=common/build.config.gki make gki_defconfig || {
+  log "Root gki_defconfig failed! Trying fallback..."
   make defconfig || exit 1
 }
+
+# Clean root files immediately
+make ARCH=arm64 mrproper
+
+# Step 2: Generate config in out/
+BUILD_CONFIG=common/build.config.gki O=out make gki_defconfig || exit 1
 
 cd $workdir
 
@@ -113,19 +120,6 @@ log "Applying config changes..."
 ../scripts/config --disable CONFIG_KSU_MANUAL_SU
 
 ../scripts/config --enable CONFIG_MODULES
-
-# CPU governor: schedutil as default + fine-tune
-../scripts/config --enable CONFIG_CPU_FREQ_GOV_SCHEDUTIL
-../scripts/config --set-str CONFIG_CPU_FREQ_DEFAULT_GOV "schedutil"
-
-# Schedutil tuning (adjust numbers if you want more/less aggressive)
-../scripts/config --set-val CONFIG_SCHEDUTIL_GOV_UP_RATE_LIMIT 100     # us, lower = faster up
-../scripts/config --set-val CONFIG_SCHEDUTIL_GOV_DOWN_RATE_LIMIT 1000  # us, higher = slower down
-../scripts/config --set-val CONFIG_SCHEDUTIL_GOV_MARGIN 80             # aggressiveness (0-100)
-
-# I/O scheduler: SSG as default
-../scripts/config --enable CONFIG_MQ_IOSCHED_SSG
-../scripts/config --set-str CONFIG_DEFAULT_IOSCHED "ssg"
 
 cd "$workdir"
 
@@ -161,6 +155,13 @@ if [[ $TODO == "defconfig" ]]; then
   exit 0
 fi
 
+# Final clean before build (last chance to make root clean)
+cd $KSRC
+log "Final clean before compilation..."
+make ARCH=arm64 mrproper
+cd "$workdir"
+
+# Build
 log "Building kernel..."
 cd $KSRC
 BUILD_CONFIG=common/build.config.gki O=out make $BUILD_FLAGS Image modules || exit 1
