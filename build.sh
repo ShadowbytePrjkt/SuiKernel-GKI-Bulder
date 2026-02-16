@@ -74,7 +74,7 @@ install_ksu pershoot/KernelSU-Next "dev"
 cd $workdir
 
 # ────────────────────────────────────────────────
-# Two-step config generation (fixes "not clean" error)
+# Two-step config generation (this fixes "not clean" error)
 # ────────────────────────────────────────────────
 log "Configuring GKI kernel (two-step to avoid dirty tree)..."
 
@@ -121,21 +121,22 @@ log "Applying config changes..."
 
 ../scripts/config --enable CONFIG_MODULES
 
-# CPU governor: schedutil as default + fine-tune
+# schedutil default governor + fine-tune
 ../scripts/config --enable CONFIG_CPU_FREQ_GOV_SCHEDUTIL
 ../scripts/config --set-str CONFIG_CPU_FREQ_DEFAULT_GOV "schedutil"
-
-# Schedutil tuning
 ../scripts/config --set-val CONFIG_SCHEDUTIL_GOV_UP_RATE_LIMIT 100
 ../scripts/config --set-val CONFIG_SCHEDUTIL_GOV_DOWN_RATE_LIMIT 1000
 ../scripts/config --set-val CONFIG_SCHEDUTIL_GOV_MARGIN 80
 
-# I/O scheduler: SSG as default
+# SSG I/O scheduler as default
 ../scripts/config --enable CONFIG_BLK_CGROUP
 ../scripts/config --enable CONFIG_CGROUP_SCHED
 ../scripts/config --enable CONFIG_FAIR_GROUP_SCHED
 ../scripts/config --enable CONFIG_MQ_IOSCHED_SSG
 ../scripts/config --set-str CONFIG_DEFAULT_IOSCHED "ssg"
+
+# DAMON reclaim
+../scripts/config --enable CONFIG_DAMON_RECLAIM
 
 cd "$workdir"
 
@@ -147,7 +148,7 @@ export KBUILD_BUILD_HOST="$HOST"
 export KBUILD_BUILD_TIMESTAMP=$(date)
 
 if [[ -n "$GITHUB_ACTIONS" ]]; then
-    JOBS=2   # lowered to 2 for more RAM safety during linking
+    JOBS=12
     log "GitHub Actions detected → using low parallelism (-j$JOBS) to avoid OOM"
 else
     JOBS=$(nproc --all)
