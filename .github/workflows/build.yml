@@ -5,7 +5,7 @@ on:
     inputs:
       RUNNER_TYPE:
         type: string
-        default: 'self-hosted'
+        default: 'ubuntu-latest'
       TODO:
         type: string
       KSU:
